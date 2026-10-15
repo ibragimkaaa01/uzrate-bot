@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# Функция для курсов
+# Функция для официальных курсов ЦБ
 def get_uz_rates():
     try:
         url = "https://cbu.uz/ru/arkhiv-kursov-valyut/json/"
@@ -30,32 +30,50 @@ def get_uz_rates():
                 }
         return rates
     except Exception as e:
-        logging.error(f"Ошибка при получении курсов: {e}")
+        logging.error(f"Ошибка при получении курсов ЦБ: {e}")
         return None
 
-# Команда /start
+# Функция для коммерческих курсов (Нацбанк NBU)
+def get_nbu_rates():
+    try:
+        url = "https://nbu.uz/exchange-rates/json/"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        for item in data:
+            if item['code'] == 'USD':
+                # У NBU ключи называются nbu_buy_price и nbu_cell_price
+                return {
+                    'buy': item.get('nbu_buy_price', 'Н/Д'),
+                    'sell': item.get('nbu_cell_price', 'Н/Д')
+                }
+    except Exception as e:
+        logging.error(f"Ошибка при получении курсов NBU: {e}")
+        return None
+
+# Команда /start и клавиатура
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     kb = [
         [types.KeyboardButton(text="💵 Курсы валют ЦБ")],
-        [types.KeyboardButton(text="🏦 Самый выгодный банк (Скоро)")]
+        [types.KeyboardButton(text="🏦 Курсы в банках")] # Переименовали кнопку
     ]
     keyboard = types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
     
     await message.answer(
         "👋 Привет! Я UzRate — твой финансовый помощник.\n\n"
-        "Я помогу тебе находить лучшие курсы валют в Узбекистане. Нажми на кнопку ниже 👇",
+        "Выбери, что тебя интересует 👇",
         reply_markup=keyboard
     )
 
-# Кнопка курсов
+# Обработка кнопки "Курсы валют ЦБ"
 @dp.message(lambda message: message.text == "💵 Курсы валют ЦБ")
-async def show_rates(message: types.Message):
+async def show_cb_rates(message: types.Message):
     await message.answer("🔄 Запрашиваю свежие данные у ЦБ РУз...")
     rates = get_uz_rates()
     
     if not rates:
-        await message.answer("❌ Извините, не удалось связаться с сервером. Попробуйте позже.")
+        await message.answer("❌ Извините, не удалось связаться с сервером ЦБ.")
         return
         
     text = "📊 **Официальный курс ЦБ РУз на сегодня:**\n\n"
@@ -67,22 +85,46 @@ async def show_rates(message: types.Message):
         
     await message.answer(text, parse_mode="Markdown")
 
-# --- ДОБАВЛЕННЫЙ БЛОК: ФЕЙКОВЫЙ СЕРВЕР ДЛЯ RENDER ---
+# Обработка кнопки "Курсы в банках"
+@dp.message(lambda message: message.text == "🏦 Курсы в банках")
+async def show_commercial_rates(message: types.Message):
+    await message.answer("🔄 Собираю актуальные курсы обмена...")
+    
+    nbu_rates = get_nbu_rates()
+    cb_rates = get_uz_rates()
+    
+    if not nbu_rates or not cb_rates:
+        await message.answer("❌ Не удалось получить данные от банков. Попробуйте позже.")
+        return
+        
+    cb_usd = cb_rates.get('USD', {}).get('Rate', 'Н/Д')
+    
+    text = (
+        "🏦 **Коммерческие курсы (Доллар США - USD):**\n\n"
+        "🏛 **ЦБ РУз (Для справки):**\n"
+        f"Официальный: {cb_usd} сум\n\n"
+        "🏦 **NBU (Нацбанк):**\n"
+        f"💵 Банк покупает у вас: **{nbu_rates['buy']} сум**\n"
+        f"💸 Банк продает вам: **{nbu_rates['sell']} сум**\n\n"
+        "*(Скоро здесь появятся Капиталбанк, TBC и другие)*"
+    )
+    
+    await message.answer(text, parse_mode="Markdown")
+
+# --- ФЕЙКОВЫЙ СЕРВЕР ДЛЯ RENDER ---
 async def ping(request):
     return web.Response(text="Bot is running!")
 
 async def main():
-    # Запускаем "заглушку" для Render
     app = web.Application()
     app.router.add_get('/', ping)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render передает свой порт, мы его ловим
+    
     port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
-    # Запускаем самого бота
     await bot.delete_webhook(drop_pending_updates=True) 
     await dp.start_polling(bot)
 
